@@ -1,0 +1,126 @@
+let facturaTable = base.getTable("FACTURA");
+let facturaDetalleTable = base.getTable("LISTA DE TRABAJOS");
+
+// Obtener el registro específico de la tabla FACTURA
+let record = await input.recordAsync("Selecciona el registro que deseas enviar:", facturaTable);
+
+// Obtener el valor de SERIE del registro seleccionado
+let filtroserie = record.getCellValue("SERIEF");
+
+// Obtener todos los registros de las tablas
+let facturaRecords = await facturaTable.selectRecordsAsync();
+let facturaDetalleRecords = await facturaDetalleTable.selectRecordsAsync();
+
+// Crear un diccionario para almacenar los detalles agrupados por SERIE
+let detallesPorSerie = [];
+
+// Función para obtener el primer valor de un campo si es una lista
+function getFirstValue(fieldValue) {
+    if (Array.isArray(fieldValue) && fieldValue.length > 0) {
+        return fieldValue[0]; // Retorna el primer valor si es un array
+    }
+    return fieldValue; // Si no es un array, retorna el valor tal cual
+}
+
+// Agrupar los detalles por SERIE solo si coincide con filtroserie
+for (let detalleRecord of facturaDetalleRecords.records) {
+    let serie = detalleRecord.getCellValue("SERIEF");
+
+    // Filtrar solo los detalles que coinciden con filtroserie
+    if (serie === filtroserie) {
+        // Extraer los detalles de la factura
+        let cantidad = detalleRecord.getCellValue("cantidad");
+        let codProducto = getFirstValue(detalleRecord.getCellValue("codProducto"));
+        let descripcion = getFirstValue(detalleRecord.getCellValue("descripcion"));
+        let mtoValorUnitario = detalleRecord.getCellValue("mtoValorUnitario");
+
+        // Cálculos dinámicos
+        let mtoValorVenta = mtoValorUnitario * cantidad;
+        let mtoBaseIgv = mtoValorVenta; // Asumiendo que toda la venta es base imponible
+        let porcentajeIgv = 18; // Porcentaje fijo de IGV
+        let igv = mtoBaseIgv * 0.18;
+        let totalImpuestos = igv; // En este caso, solo el IGV es impuesto
+        let mtoPrecioUnitario = mtoValorUnitario * 1.18;
+       
+        // Añadir al diccionario de detalles
+        detallesPorSerie.push({
+            cantidad,
+            codProducto,
+            descripcion,
+            mtoValorVenta,
+            mtoBaseIgv,
+            igv,
+            totalImpuestos,
+            mtoPrecioUnitario
+        });
+    }
+}
+
+// Datos de cliente y factura para el XML
+let personaId = "66df008c86cd480015a9cb6a"; // Cambiar por el real
+let personaToken = "DEV_..."; // Cambiar por el real
+let fileName = `10000000000-01-${filtroserie}`;
+let issueDate = new Date().toISOString().split("T")[0];
+let issueTime = new Date().toISOString().split("T")[1].split(".")[0];
+let totalVenta = detallesPorSerie.reduce((sum, item) => sum + item.mtoValorVenta, 0);
+let totalIgv = detallesPorSerie.reduce((sum, item) => sum + item.igv, 0);
+let totalPagar = totalVenta + totalIgv;
+// Crear el cuerpo del XML
+let xmlData = {
+    personaId,
+    personaToken,
+    fileName,
+    documentBody: {
+        "cbc:UBLVersionID": { _text: "2.1" },
+        "cbc:CustomizationID": { _text: "2.0" },
+        "cbc:ID": { _text: filtroserie },
+        "cbc:IssueDate": { _text: issueDate },
+        "cbc:IssueTime": { _text: issueTime },
+        "cbc:InvoiceTypeCode": { _attributes: { listID: "0401" }, _text: "01" },
+        "cbc:DocumentCurrencyCode": { _text: "USD" },
+        "cac:TaxTotal": {
+            "cbc:TaxAmount": { _attributes: { currencyID: "USD" }, _text: totalIgv },
+        },
+        "cac:LegalMonetaryTotal": {
+            "cbc:LineExtensionAmount": { _attributes: { currencyID: "USD" }, _text: totalVenta },
+            "cbc:TaxInclusiveAmount": { _attributes: { currencyID: "USD" }, _text: totalPagar },
+        },
+        "cac:InvoiceLine": detallesPorSerie.map((item, index) => ({
+            "cbc:ID": { _text: index + 1 },
+            "cbc:InvoicedQuantity": { _attributes: { unitCode: "NIU" }, _text: item.cantidad },
+            "cbc:LineExtensionAmount": { _attributes: { currencyID: "USD" }, _text: item.mtoValorVenta },
+            "cac:PricingReference": {
+                "cac:AlternativeConditionPrice": {
+                    "cbc:PriceAmount": { _attributes: { currencyID: "USD" }, _text: item.mtoPrecioUnitario },
+                    "cbc:PriceTypeCode": { _text: "01" },
+                },
+            },
+            "cac:TaxTotal": {
+                "cbc:TaxAmount": { _attributes: { currencyID: "USD" }, _text: item.igv },
+                "cac:TaxSubtotal": [
+                    {
+                        "cbc:TaxableAmount": { _attributes: { currencyID: "USD" }, _text: item.mtoBaseIgv },
+                        "cbc:TaxAmount": { _attributes: { currencyID: "USD" }, _text: item.igv },
+                        "cac:TaxCategory": {
+                            "cbc:Percent": { _text: 18 },
+                            "cbc:TaxExemptionReasonCode": { _text: "10" }, // Código fijo para IGV
+                            "cac:TaxScheme": {
+                                "cbc:ID": { _text: "1000" },
+                                "cbc:Name": { _text: "IGV" },
+                                "cbc:TaxTypeCode": { _text: "VAT" },
+                            },
+                        },
+                    },
+                ],
+            },
+            "cac:Item": {
+                "cbc:Description": { _text: item.descripcion },
+            },
+            "cac:Price": {
+                "cbc:PriceAmount": { _attributes: { currencyID: "USD" }, _text: 250 },
+            },
+        })),
+    },
+};
+// Imprimir el XML para revisión
+console.log(JSON.stringify(xmlData, null, 2));
